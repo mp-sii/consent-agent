@@ -1,0 +1,76 @@
+# =============================================================================
+# GTM Agent Project — .gitignore
+# Google ADK for Python
+# =============================================================================
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+
+# --- Virtual Environments ---
+.venv/
+venv/
+env/
+ENV/
+.env/
+
+# --- Environment Variables (NEVER commit secrets!) ---
+.env
+.env.*
+*.env
+secrets.yaml
+secrets.json
+
+# --- Google ADK / Agent Artifacts ---
+# ADK stores session state, telemetry logs, and trace data locally
+.adk/
+adk_sessions/
+agent_sessions/
+agent_traces/
+
+# --- Google Cloud Credentials ---
+# These files contain your GCP service account keys — keep them private
+gcloud-credentials.json
+application_default_credentials.json
+service_account*.json
+*-credentials.json
+
+# --- Jupyter Notebooks (optional: remove if you use notebooks) ---
+.ipynb_checkpoints/
+*.ipynb
+
+# --- IDE & Editor Files ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store         # macOS junk files
+Thumbs.db         # Windows junk files
+
+# --- Logs & Debugging ---
+*.log
+logs/
+telemetry/        # Telemetry = automatically collected usage/performance data
+
+# --- Build & Distribution ---
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# --- Testing ---
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --- Package Managers ---
+pip-log.txt
+pip-delete-this-directory.txt
+
+# --- Local Config Overrides ---
+config.local.yaml
+config.local.json
