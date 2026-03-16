@@ -52,8 +52,8 @@ def detect_cmp_and_banner(page_html_snippet: str, network_requests: list[dict]) 
     - Whether "Reject All" button exists at top level (GDPR requirement)
 
     Args:
-        page_html_snippet: First 50KB of page HTML
-        network_requests: List of dicts from crawl_website
+        page_html_snippet: HTML from the LLM (may be truncated to 10 KB)
+        network_requests: Network requests from the LLM (may be capped at 50)
 
     Returns:
         dict with: cmp_vendor, cmp_detected (bool), banner_visible (bool),
@@ -61,8 +61,13 @@ def detect_cmp_and_banner(page_html_snippet: str, network_requests: list[dict]) 
                    consent_categories (list), reject_all_available (bool),
                    gdpr_compliant_banner_structure (bool)
     """
-    html_lower = page_html_snippet.lower()
-    request_domains = " ".join(r.get("url", "") for r in network_requests).lower()
+    # Always prefer the FULL data from shared_state — the LLM only sees
+    # truncated HTML (10 KB) and capped network requests (50 entries).
+    from consent_auditor import shared_state as _ss
+    crawl = _ss.get("crawl", {})
+    html_lower = (crawl.get("page_html_snippet") or page_html_snippet or "").lower()
+    all_requests = crawl.get("network_requests") or network_requests or []
+    request_domains = " ".join(r.get("url", "") for r in all_requests).lower()
 
     cmp_vendor = "none"
     cmp_detected = False
@@ -71,7 +76,12 @@ def detect_cmp_and_banner(page_html_snippet: str, network_requests: list[dict]) 
     if "onetrust" in html_lower or "optanon" in html_lower:
         cmp_vendor = "OneTrust"
         cmp_detected = True
-    elif "cookiebot" in request_domains or "cookieconsent" in html_lower or "cookiebot" in html_lower:
+    elif (
+        "cookiebot" in request_domains
+        or "cookiebot" in html_lower
+        or "cookieconsent" in html_lower
+        or "consent.cookiebot.com" in request_domains
+    ):
         cmp_vendor = "Cookiebot"
         cmp_detected = True
     elif "trustarc.com" in request_domains or "truste.com" in request_domains:
@@ -92,21 +102,153 @@ def detect_cmp_and_banner(page_html_snippet: str, network_requests: list[dict]) 
     elif "__cmp" in html_lower and "quantcast" in request_domains:
         cmp_vendor = "Quantcast"
         cmp_detected = True
+    elif "consentmanager" in html_lower or "consentmanager" in request_domains:
+        cmp_vendor = "Consentmanager"
+        cmp_detected = True
+    elif "iubenda" in html_lower or "iubenda" in request_domains:
+        cmp_vendor = "Iubenda"
+        cmp_detected = True
+    elif "borlabs" in html_lower:
+        cmp_vendor = "Borlabs Cookie"
+        cmp_detected = True
+    elif "cookiefirst" in html_lower or "cookiefirst" in request_domains:
+        cmp_vendor = "CookieFirst"
+        cmp_detected = True
+    elif "complianz" in html_lower:
+        cmp_vendor = "Complianz"
+        cmp_detected = True
+    elif "klaro" in html_lower and "consent" in html_lower:
+        cmp_vendor = "Klaro"
+        cmp_detected = True
+    elif "termly" in html_lower or "termly" in request_domains:
+        cmp_vendor = "Termly"
+        cmp_detected = True
+    elif "civic" in html_lower and "cookie" in html_lower and "control" in html_lower:
+        cmp_vendor = "Civic UK Cookie Control"
+        cmp_detected = True
     elif (
-        "cookie" in html_lower and "consent" in html_lower
-        and ("banner" in html_lower or "popup" in html_lower or "notice" in html_lower)
+        "cookie" in html_lower
+        and (
+            "consent" in html_lower or "samtykke" in html_lower        # EN / NO
+            or "consentement" in html_lower or "toestemming" in html_lower  # FR / NL
+            or "consentimiento" in html_lower or "consenso" in html_lower   # ES / IT-PT
+            or "zgoda" in html_lower or "souhlas" in html_lower             # PL / CS
+            or "beleegyezés" in html_lower or "consimțământ" in html_lower  # HU / RO
+            or "samtycke" in html_lower or "suostumus" in html_lower        # SV / FI
+            or "souhlas" in html_lower or "privacyverklaring" in html_lower # CS / NL
+        )
+        and (
+            "banner" in html_lower or "popup" in html_lower
+            or "notice" in html_lower or "modal" in html_lower
+            or "informasjonskapsler" in html_lower                          # NO
+            or "hinweis" in html_lower or "meldung" in html_lower          # DE
+            or "melding" in html_lower or "avis" in html_lower             # NL / FR
+            or "powiadomienie" in html_lower or "oznámení" in html_lower   # PL / CS
+            or "értesítés" in html_lower or "notificare" in html_lower     # HU / RO
+            or "avviso" in html_lower or "ilmoitus" in html_lower          # IT / FI
+        )
     ):
         cmp_vendor = "custom"
         cmp_detected = True
 
-    # Banner visibility heuristics
+    # Banner visibility heuristics — all major European languages
     banner_keywords = [
+        # ── English ──────────────────────────────────────────────────────────
         "cookie-banner", "cookie_banner", "cookiebanner",
         "consent-banner", "consent_banner",
         "cookie-notice", "cookie_notice",
         "cookie-popup", "gdpr-banner",
         "cc-banner", "cc-window",
         "consent-modal", "privacy-banner",
+        # ── Norwegian (Bokmål / Nynorsk) ─────────────────────────────────────
+        "informasjonskapsler",    # "cookies"
+        "cookiemelding", "cookie-melding",
+        "samtykke",               # "consent"
+        "tillat alle cookies",    # "allow all cookies"
+        "tillat utvalgt",         # "allow selected"
+        "personvern",             # "privacy"
+        # ── German ───────────────────────────────────────────────────────────
+        "cookie-hinweis", "datenschutzhinweis", "datenschutz-banner",
+        "zustimmung", "einwilligung",   # "consent" / "agreement"
+        # ── French ───────────────────────────────────────────────────────────
+        "bandeau-cookie", "bandeau cookie",
+        "consentement", "gestion des cookies",
+        # ── Dutch ────────────────────────────────────────────────────────────
+        "cookiemelding",          # covers both NL and NO
+        "cookievoorkeuren",       # "cookie preferences"
+        "cookiebeleid",           # "cookie policy"
+        "privacymelding",         # "privacy notice"
+        "toestemming",            # "consent"
+        # ── Spanish ──────────────────────────────────────────────────────────
+        "aviso de cookies",
+        "política de cookies",
+        "consentimiento de cookies",
+        "gestión de cookies",
+        # ── Italian ──────────────────────────────────────────────────────────
+        "informativa sui cookie",
+        "consenso ai cookie",
+        "preferenze cookie",
+        "gestione dei cookie",
+        # ── Polish ───────────────────────────────────────────────────────────
+        "pliki cookie",
+        "ciasteczka",
+        "polityka cookie",
+        "ustawienia cookies",
+        # ── Portuguese ───────────────────────────────────────────────────────
+        "política de cookies",    # shared with Spanish
+        "consentimento de cookies",
+        "aviso de cookies",       # shared with Spanish
+        "preferências de cookies",
+        # ── Swedish ──────────────────────────────────────────────────────────
+        "cookiesamtycke",         # "cookie consent"
+        "cookieinformation",
+        "kakor",                  # "cookies" in Swedish
+        "integritetspolicy",      # "privacy policy"
+        # ── Danish ───────────────────────────────────────────────────────────
+        "cookiepolitik",          # "cookie policy"
+        "cookiesamtykke",         # "cookie consent"
+        "privatlivspolitik",      # "privacy policy"
+        # ── Finnish ──────────────────────────────────────────────────────────
+        "evästeet",               # "cookies"
+        "evästekäytäntö",         # "cookie policy"
+        "evästeilmoitus",         # "cookie notice"
+        "tietosuoja",             # "privacy"
+        # ── Czech ────────────────────────────────────────────────────────────
+        "soubory cookie",
+        "nastavení cookies",
+        "zásady cookies",
+        # ── Slovak ───────────────────────────────────────────────────────────
+        "súbory cookie",
+        "zásady cookies",
+        # ── Hungarian ────────────────────────────────────────────────────────
+        "sütik",                  # "cookies"
+        "süti-tájékoztató",       # "cookie notice"
+        "cookie-kezelés",         # "cookie management"
+        # ── Romanian ─────────────────────────────────────────────────────────
+        "cookie-uri",             # "cookies"
+        "politica de cookies",
+        "consimțământ",           # "consent"
+        # ── Croatian ─────────────────────────────────────────────────────────
+        "kolačići",               # "cookies"
+        "obavijest o kolačićima", # "cookie notice"
+        # ── Slovenian ────────────────────────────────────────────────────────
+        "piškotki",               # "cookies"
+        "obvestilo o piškotkih",  # "cookie notice"
+        # ── Estonian ─────────────────────────────────────────────────────────
+        "küpsised",               # "cookies"
+        "küpsiste teatis",        # "cookie notice"
+        # ── Latvian ──────────────────────────────────────────────────────────
+        "sīkdatnes",              # "cookies"
+        "sīkdatņu paziņojums",    # "cookie notice"
+        # ── Lithuanian ───────────────────────────────────────────────────────
+        "slapukai",               # "cookies"
+        "slapukų pranešimas",     # "cookie notice"
+        # ── Bulgarian (Cyrillic) ─────────────────────────────────────────────
+        "бисквитки",              # "cookies"
+        "бисквитките",
+        # ── Greek ────────────────────────────────────────────────────────────
+        "πολιτική cookies",       # "cookie policy"
+        "συναίνεση",              # "consent"
     ]
     banner_visible = cmp_detected or any(kw in html_lower for kw in banner_keywords)
 
@@ -123,12 +265,44 @@ def detect_cmp_and_banner(page_html_snippet: str, network_requests: list[dict]) 
 
     blocks_interaction = banner_type == "modal"
 
-    # Consent categories
+    # Consent categories — all major European languages
+    # Each element is a regex; label = first alternative.title()
     category_patterns = [
-        r"analytics|statistik|statistic",
-        r"marketing|advertising|advertisement",
-        r"functional|functionality|preferences|personali[sz]ation",
-        r"necessary|essential|required|strictly",
+        # Analytics / Statistics  (label → "Analytics")
+        (
+            r"analytics|statistik|statistic|statistikk"                   # EN / DE / NO
+            r"|analitica|analytique|statistieken|estadísticas|estatísticas" # IT / FR / NL / ES / PT
+            r"|statystyki|analytiikka|tilastot|statistiky|štatistiky"       # PL / FI / CS / SK
+            r"|analitika|statisztikák|statistici|statistike|analyysi"       # HU / RO / HR-SL / FI
+        ),
+        # Marketing / Advertising  (label → "Marketing")
+        (
+            r"marketing|advertising|advertisement|markedsf[øo]ring"        # EN / NO
+            r"|werbung|publicité|reclame|publicidad|pubblicità"             # DE / FR / NL / ES / IT
+            r"|publicidade|marketingowe|marknadsföring|mainonta"            # PT / PL / SV / FI
+            r"|reklamní|marketingové|hirdetési|publicitate"                 # CS / SK / HU / RO
+            r"|marketinške|oglaševanje|reklāma|reklama"                    # HR / SL / LV / LT-BG
+        ),
+        # Functional / Preferences  (label → "Functional")
+        (
+            r"functional|functionality|preferences|personali[sz]ation"     # EN
+            r"|egenskaper|funksjonell"                                      # NO
+            r"|funktion\w*|préférences|functionele|voorkeuren"              # DE / FR / NL
+            r"|funcional|funzionale|funkcjonalne|preferencje"               # ES-PT / IT / PL
+            r"|funktionella|inställningar|toiminnalliset|asetukset"         # SV / FI
+            r"|funkční|preference|funkcionális|beállítások"                 # CS / HU
+            r"|funcționale|preferințe|funkcionalne|funktsionaalsed"         # RO / HR-SL / ET
+        ),
+        # Necessary / Essential / Required  (label → "Necessary")
+        (
+            r"necessary|essential|required|strictly|n[øo]dvendig"          # EN / NO
+            r"|notwendig|erforderlich|nécessaire|noodzakelijk"              # DE / FR / NL
+            r"|necesari[ao]s?|necessari[ao]s?|niezbędne|nödvändig"          # ES / IT-PT / PL / SV
+            r"|nødvendig|välttämättömät|pakolliset|nezbytné"                # DA / FI / CS
+            r"|nevyhnutné|szükséges|necesare|nužni|nujni"                   # SK / HU / RO / HR / SL
+            r"|vajalikud|nepieciešamais|būtini|zadължителни"                # ET / LV / LT / BG
+        ),
+        # Social Media  (label → "Social")
         r"social.media|social media",
     ]
     consent_categories = []
@@ -138,14 +312,106 @@ def detect_cmp_and_banner(page_html_snippet: str, network_requests: list[dict]) 
             if label not in consent_categories:
                 consent_categories.append(label)
 
-    # Reject All availability
+    # Reject All availability — all major European languages
     reject_patterns = [
+        # ── English ──────────────────────────────────────────────────────────
         "reject all", "reject-all", "rejectall",
         "decline all", "decline-all",
         "refuse all", "refuse-all",
         "deny all", "deny-all",
-        "ablehnen",   # German
-        "tout refuser",  # French
+        "necessary only", "essential only",
+        # ── Norwegian (Bokmål / Nynorsk) ─────────────────────────────────────
+        "avvis alle",            # "reject all"
+        "avvis-alle",
+        "kun n\u00f8dvendig",    # "only necessary"
+        "kun n\u00f8dvendige",
+        "bare n\u00f8dvendige",  # "only necessary (plural)"
+        "bare n\u00f8dvendig",
+        # ── German ───────────────────────────────────────────────────────────
+        "ablehnen", "alle ablehnen",
+        "nur notwendige", "nur erforderliche",
+        # ── French ───────────────────────────────────────────────────────────
+        "tout refuser", "refuser tout",
+        "uniquement nécessaires", "continuer sans accepter",
+        # ── Dutch ────────────────────────────────────────────────────────────
+        "alles weigeren",        # "refuse all"
+        "weiger alle",           # "reject all"
+        "alleen noodzakelijke",  # "only necessary"
+        "alleen functionele",    # "only functional"
+        # ── Spanish ──────────────────────────────────────────────────────────
+        "rechazar todo",
+        "rechazar todas",
+        "solo necesarias",
+        "denegar todo",
+        "rechazar cookies",
+        # ── Italian ──────────────────────────────────────────────────────────
+        "rifiuta tutto",
+        "rifiuta tutti",
+        "solo necessari",
+        "rifiuta i cookie",
+        # ── Polish ───────────────────────────────────────────────────────────
+        "odrzuć wszystkie",
+        "odrzuć wszystko",
+        "tylko niezbędne",
+        "nie zgadzam się",
+        # ── Portuguese ───────────────────────────────────────────────────────
+        "rejeitar tudo",
+        "recusar tudo",
+        "apenas essenciais",
+        "recusar cookies",
+        # ── Swedish ──────────────────────────────────────────────────────────
+        "avvisa alla",           # "reject all"
+        "neka alla",             # "deny all"
+        "bara nödvändiga",       # "only necessary"
+        "avböj alla",            # "decline all"
+        # ── Danish ───────────────────────────────────────────────────────────
+        "afvis alle",            # "reject all"
+        "kun nødvendige",        # "only necessary"
+        "afvis cookies",
+        # ── Finnish ──────────────────────────────────────────────────────────
+        "hylkää kaikki",         # "reject all"
+        "vain välttämättömät",   # "only necessary"
+        "kieltäydy kaikesta",
+        # ── Czech ────────────────────────────────────────────────────────────
+        "odmítnout vše",         # "reject all"
+        "jen nezbytné",          # "only necessary"
+        "odmítnout cookies",
+        # ── Slovak ───────────────────────────────────────────────────────────
+        "odmietnuť všetky",      # "reject all"
+        "len nevyhnutné",        # "only necessary"
+        # ── Hungarian ────────────────────────────────────────────────────────
+        "összes elutasítása",    # "reject all"
+        "mindet elutasít",
+        "csak szükséges",        # "only necessary"
+        "elutasítás",
+        # ── Romanian ─────────────────────────────────────────────────────────
+        "refuzați toate",        # "refuse all"
+        "respingeți toate",      # "reject all"
+        "doar necesare",         # "only necessary"
+        "refuz cookie-uri",
+        # ── Croatian ─────────────────────────────────────────────────────────
+        "odbij sve",             # "reject all"
+        "samo nužni",            # "only necessary"
+        "odbiti sve kolačiće",
+        # ── Slovenian ────────────────────────────────────────────────────────
+        "zavrni vse",            # "reject all"
+        "samo nujni",            # "only necessary"
+        # ── Estonian ─────────────────────────────────────────────────────────
+        "lükka kõik tagasi",     # "reject all"
+        "keeldu kõigest",        # "refuse everything"
+        "ainult vajalikud",      # "only necessary"
+        # ── Latvian ──────────────────────────────────────────────────────────
+        "noraidīt visu",         # "reject all"
+        "tikai nepieciešamais",  # "only necessary"
+        # ── Lithuanian ───────────────────────────────────────────────────────
+        "atmesti visus",         # "reject all"
+        "tik būtini",            # "only necessary"
+        # ── Bulgarian (Cyrillic) ─────────────────────────────────────────────
+        "откажи всички",         # "reject all"
+        "само необходими",       # "only necessary"
+        # ── Greek ────────────────────────────────────────────────────────────
+        "απόρριψη όλων",         # "reject all"
+        "μόνο απαραίτητα",       # "only necessary"
     ]
     reject_all_available = any(p in html_lower for p in reject_patterns)
 
@@ -315,6 +581,39 @@ def extract_consent_mode_signals(url: str) -> dict:
                    all_denied_by_default (bool), gdpr_consent_mode_compliant (bool)
     """
     result = _run_async(_async_extract_consent_mode_signals(url))
+
+    # ── Fallback: detect Consent Mode v2 from GCS network parameter ──────────
+    # When the JS intercept misses the gtag() call (e.g. CMP fires too early),
+    # the presence of ?gcs=G1XX in any GA4 collect request is a reliable CM v2
+    # signal.  GCS encoding: G + <analytics_storage> + <ad_storage> + extras
+    #   G100 = CM active, analytics denied, ad_storage denied  → compliant
+    #   G111 = CM active, all granted  (seen after "Accept All")
+    if not result.get("consent_mode_detected"):
+        from consent_auditor import shared_state as _ss
+        crawl = _ss.get("crawl", {})
+        for req in crawl.get("network_requests", []):
+            req_url = req.get("url", "")
+            gcs_match = re.search(r"[?&]gcs=(G\d+)", req_url)
+            if gcs_match:
+                gcs_value = gcs_match.group(1)   # e.g. "G100" or "G111"
+                result["consent_mode_detected"] = True
+                result["consent_mode_version"] = "v2"
+                result["gcs_initial_value"] = gcs_value
+
+                # Parse per-digit consent states (digits after the leading G)
+                digits = gcs_value[1:]   # "100" or "111"
+                labels = ["analytics_storage", "ad_storage", "ad_user_data"]
+                default_states = {}
+                for i, digit in enumerate(digits):
+                    if i < len(labels):
+                        default_states[labels[i]] = "granted" if digit == "1" else "denied"
+                if default_states:
+                    result["default_states"] = default_states
+                    all_denied = all(v == "denied" for v in default_states.values())
+                    result["all_denied_by_default"] = all_denied
+                    result["gdpr_consent_mode_compliant"] = all_denied
+                break
+
     from consent_auditor import shared_state
     shared_state.set("consent_mode", result)
     return result
@@ -340,7 +639,30 @@ _REJECT_SELECTORS = {
 }
 
 _ACCEPT_TEXT_PATTERNS = re.compile(r"accept all|accept cookies|agree|allow all|i agree|got it", re.I)
-_REJECT_TEXT_PATTERNS = re.compile(r"reject all|decline all|refuse all|deny all|no thanks", re.I)
+_REJECT_TEXT_PATTERNS = re.compile(
+    r"reject all|decline all|refuse all|deny all|no thanks"      # English
+    r"|avvis alle|ablehnen|alle ablehnen|tout refuser"            # NO / DE / FR
+    r"|alles weigeren|weiger alle|alleen noodzakelijke"           # NL
+    r"|rechazar todo|rechazar todas|denegar todo"                 # ES
+    r"|rifiuta tutto|rifiuta tutti|solo necessari"                # IT
+    r"|odrzuć wszystkie|tylko niezbędne"                          # PL
+    r"|rejeitar tudo|recusar tudo|apenas essenciais"              # PT
+    r"|avvisa alla|neka alla|bara nödvändiga|avböj alla"          # SV
+    r"|afvis alle|kun nødvendige"                                 # DA
+    r"|hylkää kaikki|vain välttämättömät"                         # FI
+    r"|odmítnout vše|jen nezbytné"                                # CS
+    r"|odmietnuť všetky|len nevyhnutné"                           # SK
+    r"|összes elutasítása|csak szükséges|elutasítás"              # HU
+    r"|refuzați toate|respingeți toate|doar necesare"             # RO
+    r"|odbij sve|samo nužni"                                      # HR
+    r"|zavrni vse|samo nujni"                                     # SL
+    r"|lükka kõik tagasi|ainult vajalikud"                        # ET
+    r"|noraidīt visu|tikai nepieciešamais"                        # LV
+    r"|atmesti visus|tik būtini"                                  # LT
+    r"|откажи всички|само необходими"                             # BG
+    r"|απόρριψη όλων|μόνο απαραίτητα",                            # EL
+    re.I,
+)
 _CLOSE_PATTERNS = re.compile(r"close|dismiss|×|✕|✖", re.I)
 
 
@@ -417,7 +739,24 @@ async def _run_scenario(
         elif scenario == "analytics_only":
             # Try to open preferences / settings panel
             action_taken = "attempted_partial"
-            pref_patterns = re.compile(r"manage|preferences|settings|customis|customiz", re.I)
+            pref_patterns = re.compile(
+                r"manage|preferences|settings|customis|customiz"         # English
+                r"|verwalten|einstellungen|anpassen"                      # German
+                r"|gérer|paramètres|personnaliser"                        # French
+                r"|beheren|instellingen|aanpassen"                        # Dutch
+                r"|gestionar|configuración|personalizar"                  # Spanish
+                r"|gestisci|impostazioni|personalizza"                    # Italian
+                r"|zarządzaj|ustawienia|dostosuj"                         # Polish
+                r"|gerir|configurações"                                   # Portuguese
+                r"|hantera|inställningar|anpassa"                         # Swedish
+                r"|administrer|indstillinger|tilpas"                      # Danish
+                r"|hallinnoi|asetukset|mukauta"                           # Finnish
+                r"|spravovat|nastavení|přizpůsobit"                       # Czech
+                r"|spravovať|nastavenia|prispôsobiť"                      # Slovak
+                r"|kezelés|beállítások|testreszab"                        # Hungarian
+                r"|gestionați|setări|personalizați",                      # Romanian
+                re.I,
+            )
             try:
                 btn = page.get_by_role("button").filter(has_text=pref_patterns).first
                 if await btn.is_visible(timeout=3000):
@@ -619,7 +958,42 @@ async def _async_check_cookie_policy_page(base_url: str) -> dict:
                     href = link.get("href", "").lower()
                     text = link.get("text", "").lower()
                     if any(kw in href or kw in text for kw in [
-                        "cookie", "privacy", "datenschutz", "confidentialit"
+                        # English
+                        "cookie", "privacy",
+                        # German
+                        "datenschutz", "impressum",
+                        # French
+                        "confidentialit", "politique",
+                        # Dutch
+                        "cookiebeleid", "privacybeleid",
+                        # Norwegian
+                        "personvern", "informasjonskapsler",
+                        # Spanish
+                        "privacidad", "política",
+                        # Italian
+                        "riservatezza", "informativa",
+                        # Polish
+                        "prywatności", "ciasteczka",
+                        # Portuguese
+                        "privacidade",
+                        # Swedish
+                        "integritetspolicy", "kakor",
+                        # Danish
+                        "cookiepolitik", "privatlivspolitik",
+                        # Finnish
+                        "tietosuoja", "evästeet",
+                        # Czech
+                        "soukromí",
+                        # Hungarian
+                        "adatvédelmi", "sütik",
+                        # Romanian
+                        "confidențialitate", "cookie-uri",
+                        # Croatian
+                        "kolačići",
+                        # Estonian
+                        "küpsised",
+                        # Lithuanian
+                        "slapukai",
                     ]):
                         policy_url = link["href"]
                         policy_found = True
@@ -648,22 +1022,91 @@ async def _async_check_cookie_policy_page(base_url: str) -> dict:
                     html = (await page.content()).lower()
 
                     category_hints = [
+                        # English
                         "analytics", "marketing", "functional", "necessary",
                         "essential", "performance", "advertising",
+                        # German
+                        "analyse", "werbung", "notwendig", "leistung",
+                        # French
+                        "analytique", "publicité", "nécessaire",
+                        # Dutch
+                        "analytisch", "noodzakelijk",
+                        # Spanish
+                        "analítica", "publicidad", "necesaria",
+                        # Italian
+                        "analitica", "pubblicità", "necessari",
+                        # Polish
+                        "analityczne", "marketingowe", "niezbędne",
+                        # Portuguese
+                        "publicidade", "necessários",
+                        # Swedish
+                        "marknadsföring", "nödvändig",
+                        # Danish
+                        "markedsføring", "nødvendig",
+                        # Finnish
+                        "analytiikka", "markkinointi", "välttämätön",
+                        # Czech
+                        "analytické", "marketingové", "nezbytné",
+                        # Hungarian
+                        "analitikai", "szükséges",
+                        # Romanian
+                        "analitice", "necesare",
                     ]
                     categories_listed = sum(1 for h in category_hints if h in html) >= 2
 
                     # Last updated date pattern
                     date_match = re.search(
-                        r"(last\s+updated|updated\s+on|effective\s+date)[:\s]+([a-z]+\s+\d{1,2},?\s+\d{4}|\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})",
-                        html, re.I
+                        r"(last\s+updated|updated\s+on|effective\s+date"          # English
+                        r"|zuletzt\s+aktualisiert|letzte\s+aktualisierung"        # German
+                        r"|derni[eè]re\s+mise\s+[aà]\s+jour|mis\s+[aà]\s+jour"   # French
+                        r"|laatst\s+bijgewerkt"                                   # Dutch
+                        r"|última\s+actualizaci[oó]n|actualizado\s+el"            # Spanish
+                        r"|ultimo\s+aggiornamento"                                # Italian
+                        r"|última\s+atualiza[çc][aã]o"                            # Portuguese
+                        r"|ostatnia\s+aktualizacja"                               # Polish
+                        r"|senast\s+uppdaterad"                                   # Swedish
+                        r"|sidst\s+opdateret"                                     # Danish
+                        r"|viimeksi\s+päivitetty"                                 # Finnish
+                        r"|naposledy\s+aktualizov[aá]no"                          # Czech
+                        r"|utoljára\s+frissítve"                                  # Hungarian
+                        r"|actualizat\s+ultima\s+dat[aă]"                         # Romanian
+                        r")[:\s]+([a-z]+\s+\d{1,2},?\s+\d{4}|\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})",
+                        html, re.I,
                     )
                     if date_match:
                         last_updated = date_match.group(2).strip()
 
                     dpo_hints = [
+                        # English
                         "data protection officer", "dpo", "dpo@", "privacy@",
                         "contact us", "gdpr@", "compliance@",
+                        # German
+                        "datenschutzbeauftragter", "datenschutzbeauftragte",
+                        "datenschutz@",
+                        # French
+                        "délégué à la protection des données", "dpd@",
+                        "responsable de la protection",
+                        # Dutch
+                        "functionaris voor gegevensbescherming", "fg@",
+                        "privacyofficer",
+                        # Spanish
+                        "delegado de protección de datos",
+                        # Italian
+                        "responsabile della protezione dei dati",
+                        # Polish
+                        "inspektor ochrony danych", "iod@",
+                        # Swedish
+                        "dataskyddsombud",
+                        # Danish
+                        "databeskyttelsesrådgiver",
+                        # Finnish
+                        "tietosuojavastaava",
+                        # Czech
+                        "pověřenec pro ochranu osobních údajů",
+                        # Hungarian
+                        "adatvédelmi tisztviselő",
+                        # Romanian
+                        "responsabil cu protecția datelor",
                     ]
                     dpo_contact_present = any(h in html for h in dpo_hints)
 

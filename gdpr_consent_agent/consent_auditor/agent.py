@@ -1,6 +1,7 @@
 """GDPR Consent Auditor — three sub-agents orchestrated by a SequentialAgent."""
 
 from google.adk.agents import Agent, SequentialAgent
+from google.genai import types
 
 from .tools.browser_tools import crawl_website, take_scenario_screenshot
 from .tools.consent_tools import (
@@ -11,10 +12,22 @@ from .tools.consent_tools import (
 )
 from .tools.report_tools import generate_gdpr_report
 
+# Shared retry config — retries up to 3 times with a 60 s initial back-off.
+# This handles 429 RESOURCE_EXHAUSTED responses from the Gemini API.
+_retry_config = types.GenerateContentConfig(
+    http_options=types.HttpOptions(
+        retry_options=types.HttpRetryOptions(
+            initial_delay=60.0,   # seconds — matches the ~44 s retry window
+            attempts=3,
+        ),
+    ),
+)
+
 # ── Sub-Agent 1: Crawler ──────────────────────────────────────────────────────
 crawler_agent = Agent(
     name="crawler_agent",
     model="gemini-2.5-flash",
+    generate_content_config=_retry_config,
     description="Visits the website and captures raw technical data",
     instruction="""
 You are a technical web crawler. Your only job is to gather raw data.
@@ -36,6 +49,7 @@ Consent Mode: [detected/not detected], Cookie Policy: [found/not found]"
 analyst_agent = Agent(
     name="consent_analyst_agent",
     model="gemini-2.5-flash",
+    generate_content_config=_retry_config,
     description="Detects CMP, runs consent scenarios, identifies GDPR violations",
     instruction="""
 You are a GDPR consent specialist. You analyse raw crawl data and run active tests.
@@ -70,6 +84,7 @@ Report: "Analysis complete. CMP: [vendor]. Violations: [N] critical, [N] high, [
 reporter_agent = Agent(
     name="report_generator_agent",
     model="gemini-2.5-flash",
+    generate_content_config=_retry_config,
     description="Generates the final professional GDPR compliance HTML report",
     instruction="""
 You are a report file writer. You have exactly one task: call generate_gdpr_report().

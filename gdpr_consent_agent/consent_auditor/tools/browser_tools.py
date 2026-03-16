@@ -185,23 +185,38 @@ def crawl_website(url: str) -> dict:
     - All network requests grouped by category (analytics, ads, essential, unknown)
     - JavaScript dataLayer / window.__tcfapi presence
     - All cookies set BEFORE any user consent action
-    - A base64-encoded screenshot of the landing page
-    - Raw HTML of the page (first 50KB for CMP detection)
+    - Raw HTML of the page (first 10KB for CMP detection)
 
     Args:
         url: Full URL including https:// e.g. "https://example.com"
 
     Returns:
-        dict with keys: url, screenshot_b64, cookies_before_consent,
-                        network_requests, has_datalayer, has_tcf_api,
-                        page_html_snippet, error (if any)
+        dict with keys: url, cookies_before_consent, network_requests (max 50),
+                        has_datalayer, has_tcf_api, page_html_snippet (10 KB),
+                        error (if any).
+        Note: screenshot is stored internally and included in the final report.
     """
     result = _run_async(_async_crawl_website(url))
-    # Persist to shared_state so report generator can read it directly
+    # Save FULL result (including screenshot_b64) to shared_state for the report
     from consent_auditor import shared_state
     shared_state.set("url", url)
     shared_state.set("crawl", result)
-    return result
+
+    # Return a SLIM version to the LLM to avoid hitting token-per-minute quota.
+    # screenshot_b64 alone can be 50 000+ tokens as a base64 string.
+    requests = result.get("network_requests", [])
+    return {
+        "url": result["url"],
+        "has_datalayer": result["has_datalayer"],
+        "has_tcf_api": result["has_tcf_api"],
+        "error": result["error"],
+        "cookies_before_consent": result.get("cookies_before_consent", []),
+        # Cap HTML at 10 KB — enough for CMP fingerprinting
+        "page_html_snippet": result.get("page_html_snippet", "")[:10240],
+        # Cap request list at 50 entries — enough for domain pattern matching
+        "network_requests": requests[:50],
+        "network_requests_total": len(requests),
+    }
 
 
 async def _async_take_scenario_screenshot(url: str, scenario_name: str) -> dict:

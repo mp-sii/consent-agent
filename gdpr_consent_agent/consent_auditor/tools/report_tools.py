@@ -8,18 +8,100 @@ from jinja2 import Template
 # Compliance score
 # ---------------------------------------------------------------------------
 
-def calculate_compliance_score(violations: list) -> int:
-    score = 100
-    for v in violations:
-        if "CRITICAL" in v:
-            score -= 25
-        elif "HIGH" in v:
-            score -= 15
-        elif "MEDIUM" in v:
-            score -= 8
-        elif "LOW" in v:
-            score -= 3
-    return max(0, score)
+def calculate_compliance_score(violations: list, audit_data: dict = None) -> tuple:
+    """
+    Category-based positive scoring (earned points, not deductions).
+    Returns (total_score: int, breakdown: dict).
+
+    4 categories — 100 pts total:
+      ① CMP & Banner ........... 25 pts
+      ② Google Consent Mode .... 25 pts
+      ③ Scenario / Pre-consent . 30 pts
+      ④ Cookie Policy .......... 20 pts
+    """
+    audit_data = audit_data or {}
+    cmp     = audit_data.get("cmp_detection", {})
+    cm      = audit_data.get("consent_mode", {})
+    policy  = audit_data.get("cookie_policy", {})
+    crawl   = audit_data.get("crawl", {})
+    scenarios_data = audit_data.get("scenarios", {})
+    scenario_list  = scenarios_data.get("scenarios", [])
+
+    breakdown = {}
+
+    # ── ① CMP & Banner (25 pts) ────────────────────────────────────────────
+    c1 = 0
+    if cmp.get("cmp_detected"):
+        c1 += 10                                   # known CMP vendor found
+    if cmp.get("banner_visible"):
+        c1 += 5                                    # banner shown on load
+    if cmp.get("reject_all_available"):
+        c1 += 10                                   # Reject All at top level
+    breakdown["cmp_banner"] = {"score": c1, "max": 25,
+                                "label": "CMP & Banner"}
+
+    # ── ② Google Consent Mode (25 pts) ────────────────────────────────────
+    c2 = 0
+    if cm.get("consent_mode_detected"):
+        c2 += 5
+    if cm.get("consent_mode_version") == "v2":
+        c2 += 10
+    if cm.get("all_denied_by_default"):
+        c2 += 10
+    breakdown["consent_mode"] = {"score": c2, "max": 25,
+                                  "label": "Google Consent Mode v2"}
+
+    # ── ③ Scenario & Pre-consent Testing (30 pts) ─────────────────────────
+    c3 = 0
+    # No tracking before consent (cookie domain check)
+    pre_trackers = [
+        c for c in crawl.get("cookies_before_consent", [])
+        if any(td in c.get("domain", "") for td in [
+            "google-analytics.com", "doubleclick.net", "facebook.net",
+            "googlesyndication.com", "segment.io", "hotjar.com",
+        ])
+    ]
+    if not pre_trackers:
+        c3 += 10
+
+    # Reject All scenario — no tracking fired
+    reject_s = next(
+        (s for s in scenario_list if s.get("scenario_name") == "reject_all"), None
+    )
+    if reject_s:
+        no_analytics = not reject_s.get("analytics_requests_fired")
+        no_ads       = not reject_s.get("ads_requests_fired")
+        if no_analytics and no_ads:
+            c3 += 12                               # fully clean after rejection
+        elif reject_s.get("action_taken") == "clicked_reject_all":
+            c3 += 4                                # button found, partial credit
+
+    # Close without choosing — no tracking fired
+    close_s = next(
+        (s for s in scenario_list if s.get("scenario_name") == "close_without_choosing"), None
+    )
+    if close_s and not close_s.get("analytics_requests_fired") \
+               and not close_s.get("ads_requests_fired"):
+        c3 += 8
+
+    breakdown["scenarios"] = {"score": c3, "max": 30,
+                               "label": "Scenario & Pre-consent Testing"}
+
+    # ── ④ Cookie Policy (20 pts) ───────────────────────────────────────────
+    c4 = 0
+    if policy.get("policy_found"):
+        c4 += 8
+    if policy.get("categories_listed"):
+        c4 += 5
+    if policy.get("last_updated"):
+        c4 += 3
+    if policy.get("dpo_contact_present"):
+        c4 += 4
+    breakdown["cookie_policy"] = {"score": c4, "max": 20,
+                                   "label": "Cookie Policy"}
+
+    total = c1 + c2 + c3 + c4
+    return total, breakdown
 
 
 def _score_label(score: int) -> tuple:
@@ -147,6 +229,18 @@ _REPORT_TEMPLATE = """<!DOCTYPE html>
   .pill-green { background: #E8F5E9; color: #2E7D32; }
   .pill-red   { background: #FFEBEE; color: #C62828; }
   .pill-gray  { background: #EEEEEE; color: #555; }
+
+  /* Score breakdown bars */
+  .breakdown { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+               gap: 14px; margin: 20px 0 28px; }
+  .breakdown-item { background: #fff; border-radius: 8px; padding: 14px 16px;
+                    box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+  .breakdown-header { display: flex; justify-content: space-between; align-items: baseline;
+                      margin-bottom: 8px; }
+  .breakdown-label { font-size: 12px; color: #555; font-weight: 600; }
+  .breakdown-pts { font-size: 13px; font-weight: 800; color: var(--brand); }
+  .bar-track { background: #EEF0F5; border-radius: 4px; height: 8px; overflow: hidden; }
+  .bar-fill  { height: 8px; border-radius: 4px; transition: width .4s; }
 </style>
 </head>
 <body>
@@ -165,6 +259,26 @@ _REPORT_TEMPLATE = """<!DOCTYPE html>
       <div class="score-label-text">/ 100</div>
     </div>
     <div class="score-status">{{ score_status }}</div>
+  </div>
+
+  <!-- Score Breakdown bars -->
+  <div class="breakdown">
+    {% for key, cat in score_breakdown.items() %}
+    {% set pct = (cat.score / cat.max * 100) | int %}
+    {% if pct >= 80 %}{% set bar_colour = "#2E7D32" %}
+    {% elif pct >= 50 %}{% set bar_colour = "#F9A825" %}
+    {% elif pct > 0 %}{% set bar_colour = "#E65100" %}
+    {% else %}{% set bar_colour = "#B71C1C" %}{% endif %}
+    <div class="breakdown-item">
+      <div class="breakdown-header">
+        <span class="breakdown-label">{{ cat.label }}</span>
+        <span class="breakdown-pts" style="color:{{ bar_colour }}">{{ cat.score }} / {{ cat.max }}</span>
+      </div>
+      <div class="bar-track">
+        <div class="bar-fill" style="width:{{ pct }}%; background:{{ bar_colour }};"></div>
+      </div>
+    </div>
+    {% endfor %}
   </div>
 
   <!-- Summary Cards -->
@@ -545,7 +659,7 @@ def generate_gdpr_report(output_dir: str = ".") -> str:
             unique_violations.append(v)
     all_violations = unique_violations
 
-    compliance_score = calculate_compliance_score(all_violations)
+    compliance_score, score_breakdown = calculate_compliance_score(all_violations, audit_data)
     score_status, score_colour = _score_label(compliance_score)
 
     scenarios_list = scenarios_data.get("scenarios", [])
@@ -569,6 +683,7 @@ def generate_gdpr_report(output_dir: str = ".") -> str:
         compliance_score=compliance_score,
         score_status=score_status,
         score_colour=score_colour,
+        score_breakdown=score_breakdown,
         # CMP
         cmp_vendor=cmp.get("cmp_vendor", "Unknown"),
         cmp_detected=cmp.get("cmp_detected", False),

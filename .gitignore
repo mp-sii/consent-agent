@@ -74,3 +74,6 @@ pip-delete-this-directory.txt
 # --- Local Config Overrides ---
 config.local.yaml
 config.local.json
+
+# --- Reports ---
+*.html
