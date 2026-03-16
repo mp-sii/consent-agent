@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "WebFetch(domain:google.github.io)"
+      "WebFetch(domain:google.github.io)",
+      "Bash(python -m py_compile consent_auditor/tools/consent_tools.py)",
+      "Bash(python3 -m py_compile \"/mnt/c/dev/consent-agent/gdpr_consent_agent/consent_auditor/tools/consent_tools.py\")",
+      "Bash(cmd.exe /c \"cd C:\\\\dev\\\\consent-agent\\\\gdpr_consent_agent && python -m py_compile consent_auditor\\\\tools\\\\consent_tools.py && echo OK — no syntax errors\")"
     ]
   }
 }
