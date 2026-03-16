@@ -72,25 +72,14 @@ reporter_agent = Agent(
     model="gemini-2.5-flash",
     description="Generates the final professional GDPR compliance HTML report",
     instruction="""
-You are a compliance report writer. Generate a complete, professional report.
+You are a report file writer. You have exactly one task: call generate_gdpr_report().
 
-1. Combine crawl_results and analysis_results from session state into an audit_data dict:
-   {
-     "url": <the audited URL>,
-     "crawl": <crawl_website result from crawl_results>,
-     "consent_mode": <extract_consent_mode_signals result from crawl_results>,
-     "cookie_policy": <check_cookie_policy_page result from crawl_results>,
-     "cmp_detection": <detect_cmp_and_banner result from analysis_results>,
-     "scenarios": <run_consent_scenarios result from analysis_results>,
-   }
+Call generate_gdpr_report with no arguments. The tool handles everything automatically.
 
-2. Build the output_filename as: gdpr_report_{domain}_{YYYYMMDD}.html
-   where domain = URL hostname with dots replaced by underscores
-   and YYYYMMDD = today's date.
-
-3. Call generate_gdpr_report(audit_data, output_filename) to produce the HTML report.
-
-Report back the compliance score, top 3 critical violations, and the report file path.
+After the tool call succeeds, reply with a short summary:
+  - Report saved to: <file path returned by the tool>
+  - Compliance score and status
+  - Top violations found
 """,
     tools=[generate_gdpr_report],
     output_key="report_results",

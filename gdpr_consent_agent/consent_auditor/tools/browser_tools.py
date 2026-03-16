@@ -2,8 +2,20 @@
 
 import asyncio
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from urllib.parse import urlparse
+
+
+def _run_async(coro):
+    """
+    Run an async coroutine safely whether or not an event loop is already
+    running (ADK runs its own loop, so asyncio.run() would raise RuntimeError).
+    Spawns a dedicated thread — threads always start with no event loop.
+    """
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(asyncio.run, coro)
+        return future.result()
 
 # Domain pattern lists for request categorisation
 ANALYTICS_DOMAINS = [
@@ -184,7 +196,12 @@ def crawl_website(url: str) -> dict:
                         network_requests, has_datalayer, has_tcf_api,
                         page_html_snippet, error (if any)
     """
-    return asyncio.run(_async_crawl_website(url))
+    result = _run_async(_async_crawl_website(url))
+    # Persist to shared_state so report generator can read it directly
+    from consent_auditor import shared_state
+    shared_state.set("url", url)
+    shared_state.set("crawl", result)
+    return result
 
 
 async def _async_take_scenario_screenshot(url: str, scenario_name: str) -> dict:
@@ -233,4 +250,4 @@ def take_scenario_screenshot(url: str, scenario_name: str) -> dict:
     Returns:
         dict with scenario_name, screenshot_b64, timestamp
     """
-    return asyncio.run(_async_take_scenario_screenshot(url, scenario_name))
+    return _run_async(_async_take_scenario_screenshot(url, scenario_name))

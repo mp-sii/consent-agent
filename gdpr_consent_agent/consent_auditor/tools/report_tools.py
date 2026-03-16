@@ -455,17 +455,41 @@ def _build_recommendations(audit_data: dict) -> list:
 # Tool 7: generate_gdpr_report
 # ---------------------------------------------------------------------------
 
-def generate_gdpr_report(audit_data: dict, output_filename: str = "gdpr_consent_report.html") -> str:
+def generate_gdpr_report(output_dir: str = ".") -> str:
     """
-    Generates a professional HTML report from all audit data.
+    Generates a professional self-contained HTML GDPR compliance report and saves it to disk.
+    All audit data (URL, cookies, CMP results, consent scenarios) is read automatically
+    from shared state — no other arguments are needed.
+    The output filename is derived automatically from the audited URL and today's date.
 
     Args:
-        audit_data: Combined dict from shared_state containing all tool outputs
-        output_filename: Output path for HTML report
+        output_dir: Directory to save the report in (default: current working directory)
 
     Returns:
-        Path to generated report file
+        Absolute path to the saved HTML report file
     """
+    from consent_auditor import shared_state
+    from urllib.parse import urlparse as _urlparse
+
+    url = shared_state.get("url", "unknown")
+
+    # Auto-build filename:  gdpr_report_www_example_com_20260316.html
+    try:
+        hostname = _urlparse(url).netloc.replace(".", "_").replace("-", "_")
+    except Exception:
+        hostname = "unknown"
+    date_str = datetime.utcnow().strftime("%Y%m%d")
+    output_filename = os.path.join(output_dir, f"gdpr_report_{hostname}_{date_str}.html")
+
+    audit_data = {
+        "url": url,
+        "crawl": shared_state.get("crawl", {}),
+        "consent_mode": shared_state.get("consent_mode", {}),
+        "cookie_policy": shared_state.get("cookie_policy", {}),
+        "cmp_detection": shared_state.get("cmp_detection", {}),
+        "scenarios": shared_state.get("scenarios", {}),
+    }
+
     # Extract sub-sections
     crawl = audit_data.get("crawl", {})
     cmp = audit_data.get("cmp_detection", {})
@@ -589,6 +613,7 @@ def generate_gdpr_report(audit_data: dict, output_filename: str = "gdpr_consent_
     )
 
     output_path = os.path.abspath(output_filename)
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(html)
 

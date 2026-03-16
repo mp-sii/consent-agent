@@ -2,7 +2,19 @@
 
 import asyncio
 import re
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
+
+
+def _run_async(coro):
+    """
+    Run an async coroutine safely whether or not an event loop is already
+    running (ADK runs its own loop, so asyncio.run() would raise RuntimeError).
+    Spawns a dedicated thread — threads always start with no event loop.
+    """
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(asyncio.run, coro)
+        return future.result()
 
 # Known tracker domains used when checking cookies set before consent
 TRACKING_DOMAINS = [
@@ -28,7 +40,7 @@ TRACKING_DOMAINS = [
 # Tool 3: detect_cmp_and_banner
 # ---------------------------------------------------------------------------
 
-def detect_cmp_and_banner(page_html_snippet: str, network_requests: list) -> dict:
+def detect_cmp_and_banner(page_html_snippet: str, network_requests: list[dict]) -> dict:
     """
     Analyzes the page HTML and network requests to identify:
     - Which CMP is in use (OneTrust, Cookiebot, TrustArc, Usercentrics,
@@ -150,7 +162,7 @@ def detect_cmp_and_banner(page_html_snippet: str, network_requests: list) -> dic
     # banner present + reject all available at top level
     gdpr_compliant_banner_structure = banner_visible and reject_all_available
 
-    return {
+    result = {
         "cmp_vendor": cmp_vendor,
         "cmp_detected": cmp_detected,
         "banner_visible": banner_visible,
@@ -160,6 +172,9 @@ def detect_cmp_and_banner(page_html_snippet: str, network_requests: list) -> dic
         "reject_all_available": reject_all_available,
         "gdpr_compliant_banner_structure": gdpr_compliant_banner_structure,
     }
+    from consent_auditor import shared_state
+    shared_state.set("cmp_detection", result)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -299,7 +314,10 @@ def extract_consent_mode_signals(url: str) -> dict:
                    has_wait_for_update (bool), wait_for_update_ms (int),
                    all_denied_by_default (bool), gdpr_consent_mode_compliant (bool)
     """
-    return asyncio.run(_async_extract_consent_mode_signals(url))
+    result = _run_async(_async_extract_consent_mode_signals(url))
+    from consent_auditor import shared_state
+    shared_state.set("consent_mode", result)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -546,7 +564,10 @@ def run_consent_scenarios(url: str, cmp_vendor: str) -> dict:
             analytics_requests_fired (list), ads_requests_fired (list),
             consent_mode_update (dict), violations (list of strings)
     """
-    return asyncio.run(_async_run_consent_scenarios(url, cmp_vendor))
+    result = _run_async(_async_run_consent_scenarios(url, cmp_vendor))
+    from consent_auditor import shared_state
+    shared_state.set("scenarios", result)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -679,4 +700,7 @@ def check_cookie_policy_page(base_url: str) -> dict:
                    categories_listed (bool), last_updated (str),
                    dpo_contact_present (bool)
     """
-    return asyncio.run(_async_check_cookie_policy_page(base_url))
+    result = _run_async(_async_check_cookie_policy_page(base_url))
+    from consent_auditor import shared_state
+    shared_state.set("cookie_policy", result)
+    return result
